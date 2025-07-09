@@ -7,7 +7,6 @@ from transformers import AutoConfig, PretrainedConfig
 
 logger = logging.getLogger(__name__)
 
-
 class SpeechLLMConfig(PretrainedConfig):
     model_type = "speechllm"
     is_composition = True
@@ -78,13 +77,3 @@ class SpeechLLMConfig(PretrainedConfig):
         })
         
         return output
-
-    def _get_non_default_generation_parameters(self):
-        """
-        Override to fix transformers library bug with UnboundLocalError.
-        """
-        try:
-            return super()._get_non_default_generation_parameters()
-        except UnboundLocalError:
-            # Fallback if there's an issue with the base implementation
-            return {}

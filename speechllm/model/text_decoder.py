@@ -1,9 +1,7 @@
 import contextlib
-import logging
 from abc import ABCMeta, abstractmethod
 from typing import List, Optional
 
-# import deepspeed
 import torch
 from transformers import (
     AutoConfig,
@@ -12,14 +10,10 @@ from transformers import (
     LlamaModel,
     PreTrainedModel,
 )
-# from transformers.integrations import (
-#     deepspeed_config,
-#     is_deepspeed_zero3_enabled,
-# )
 
 from speechllm import conversation as conversation_lib
 
-
+import logging
 logger = logging.getLogger(__name__)
 
 
@@ -27,9 +21,7 @@ class HfTextDecoder(
     torch.nn.Module, metaclass=ABCMeta
 ):
     """
-    Base class for Hugging Face text decoders. This class is a wrapper
-    around Hugging Face text decoders that provides a consistent interface for
-    decoding multimodal embeddings into text.
+    Base class for Hugging Face text decoders.
 
     Args:
         name_or_path (str, optional): The model name or path to load the model
@@ -169,34 +161,8 @@ class HfTextDecoder(
         pass
 
     def _adapt_tokenizer_to_conversation_version(self):
-        if self.conversation_version == "v0":
-            if self.tokenizer.pad_token is None:
-                pad_token = "[PAD]"
-                logger.info(f"Adding pad token '{pad_token}'.")
-                self._resize_tokenizer_and_embedding_layer(
-                    additional_special_tokens=[pad_token],
-                )
-        elif self.conversation_version == "v0.5":
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-        elif self.conversation_version == "v1":
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-            if self.conversation_version in conversation_lib.conv_templates:
-                conversation_lib.default_conversation = (
-                    conversation_lib.conv_templates[self.conversation_version]
-                )
-            else:
-                conversation_lib.default_conversation = (
-                    conversation_lib.conv_templates["vicuna_v1"]
-                )
-        elif self.conversation_version == "mistral_instruct":
-            self.tokenizer.pad_token = self.tokenizer.unk_token
-            conversation_lib.default_conversation = (
-                conversation_lib.conv_templates["mistral_instruct"]
-            )
-        elif (
+        if (
             self.conversation_version == "llama_3_1"
-            or self.conversation_version == "llama_3_1_base"
-            or self.conversation_version == "llama_3_1_lara"
         ):
             pad_token = "<|finetune_right_pad_id|>"
             logger.info(f"Setting pad token to '{pad_token}'.")
@@ -208,58 +174,12 @@ class HfTextDecoder(
                 conversation_lib.conv_templates[self.conversation_version]
             )
         else:
-            if (
-                self.conversation_version
-                not in conversation_lib.conv_templates
-            ):
-                raise ValueError(
-                    f"Unknown conversation format "
-                    f"'{self.conversation_version}'."
-                )
-            conversation_lib.default_conversation = (
-                conversation_lib.conv_templates[self.conversation_version]
-            )
-            if self.tokenizer.pad_token is None:
-                pad_token = "<pad>"
-                logger.info(f"Adding pad token as {pad_token}")
-                self._resize_tokenizer_and_embedding_layer(
-                    additional_special_tokens=[pad_token],
-                )
+            raise ValueError(f"Unsupported conversation version: {self.conversation_version}")
 
         logger.info(
             f"Using conversation format: "
             f"{conversation_lib.default_conversation.version}"
         )
-
-    def _resize_tokenizer_and_embedding_layer(
-        self,
-        additional_special_tokens: List[str],
-    ):
-        """
-        Note: This is the unoptimized version that may make your embedding size
-        not be divisible by 64.
-        """
-        special_tokens_dict = {
-            "additional_special_tokens": additional_special_tokens
-        }
-        num_new_tokens = self.tokenizer.add_special_tokens(
-            special_tokens_dict, replace_additional_special_tokens=False
-        )
-        if num_new_tokens > 0:  # i.e. if they were not already there
-            self.model.resize_token_embeddings(
-                new_num_tokens=len(self.tokenizer)
-            )
-            input_embeddings = self.model.get_input_embeddings().weight.data
-            mean_input_embedding = input_embeddings[:-num_new_tokens].mean(
-                dim=0, keepdim=True
-            )
-            input_embeddings[-num_new_tokens:] = mean_input_embedding
-
-            output_embeddings = self.model.get_output_embeddings().weight.data
-            mean_output_embedding = output_embeddings[:-num_new_tokens].mean(
-                dim=0, keepdim=True
-            )
-            output_embeddings[-num_new_tokens:] = mean_output_embedding
 
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()

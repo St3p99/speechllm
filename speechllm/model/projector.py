@@ -4,7 +4,7 @@ from typing import Optional
 
 class MLPProjector(nn.Module):
     """
-    Simple MLP projector for mapping between different hidden dimensions.
+    MLP projector
 
     Args:
         input_dim (int): Input dimension size

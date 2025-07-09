@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchaudio
 
 from speechllm.conversation import Conversation
 from speechllm.constants import IGNORE_INDEX, DEFAULT_AUDIO_TOKEN_IDX
@@ -13,28 +14,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-# Try to import torchaudio for resampling, fallback to warning if not available
-try:
-    import torchaudio
-    TORCHAUDIO_AVAILABLE = True
-except ImportError:
-    TORCHAUDIO_AVAILABLE = False
-    import warnings
-    warnings.warn("torchaudio not available, audio resampling will be skipped. Install torchaudio for proper audio handling.")
-
-def _resample_audio(audio, orig_sr, target_sr):
-    """Resample audio tensor from orig_sr to target_sr."""
-    if orig_sr == target_sr:
-        return audio
-    
-    if not TORCHAUDIO_AVAILABLE:
-        warnings.warn(f"Cannot resample audio from {orig_sr} to {target_sr}Hz - torchaudio not available")
-        return audio
-    
-    # Use torchaudio's resample function
-    resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=target_sr)
-    return resampler(audio)
 
 class SpeechLLM(nn.Module):
     def __init__(
@@ -133,12 +112,11 @@ class SpeechLLM(nn.Module):
             Model output with properly handled attention for both text and audio inputs.
             
         Note:
-            Audio inputs are automatically padded and masked to handle vari==able-length sequences.
-            The attention masks are applied at the encoder level, and the projector uses an improved
-            MlpAdapter-inspired architecture with LayerNorm and optional residual connections for
-            better training stability.
+            Audio inputs are automatically padded and masked to handle variable-length sequences
         """
+
         if input_embeds is None:
+            # build inputs_embeds, labels,.. from text and audio inputs
             (
                 input_ids,
                 position_ids,
@@ -146,7 +124,7 @@ class SpeechLLM(nn.Module):
                 past_key_values,
                 inputs_embeds,
                 labels,
-                projector_output,
+                audio_features,
             ) = self.prepare_inputs_labels(
                 text_inputs={
                     "input_ids": input_ids,
@@ -177,77 +155,16 @@ class SpeechLLM(nn.Module):
 
         return model_output
     
-    
-    def _process_audio_batch(self, audios_srs):
-        """
-        Process a batch of audio tuples into a batched tensor with attention masks.
-
-        Args:
-            audios_srs: List of tuples (audio_tensor, sample_rate)
-
-        Returns:
-            tuple: (batched_audio_tensor, audio_attention_mask)
-                - batched_audio_tensor: torch.Tensor of shape (batch_size, max_length)
-                - audio_attention_mask: torch.Tensor of shape (batch_size, max_length) indicating valid audio regions
-        """
-        if not audios_srs:
-            return None, None
-
-        # Check that encoder has input_sampling_rate attribute
-        if not hasattr(self.encoder, "input_sampling_rate"):
-            raise AttributeError("Encoder must have 'input_sampling_rate' attribute.")
-
-        target_sr = self.encoder.input_sampling_rate
-        processed_audios = []
-        original_lengths = []
-
-        for audio, sr in audios_srs:
-            # Ensure audio is 1D
-            if audio.dim() > 1:
-                audio = audio.squeeze()
-            # Validate audio is not empty
-            if audio.numel() == 0:
-                raise ValueError("Empty audio tensor detected. This will cause processing failures.")
-            # Resample if necessary
-            if sr != target_sr:
-                audio = _resample_audio(audio, sr, target_sr)
-            processed_audios.append(audio)
-            original_lengths.append(audio.shape[0])
-
-        if len(processed_audios) == 0:
-            return None, None
-
-        # Find max length for padding
-        max_length = max(original_lengths)
-
-        # Pad all audios to max length and create attention masks
-        batched_audios = []
-        audio_padding_masks = []
-
-        for audio, orig_len in zip(processed_audios, original_lengths):
-            padding = max_length - orig_len
-            if orig_len < max_length:
-                audio = F.pad(audio, (0, padding), mode='constant', value=0)
-
-            padding = max_length - orig_len           # always defined
-            cur_padding_mask = torch.cat(
-                [
-                    torch.zeros(orig_len,  dtype=torch.bool, device=audio.device),
-                    torch.ones (padding,   dtype=torch.bool, device=audio.device),
-                ]
-            )
-
-            batched_audios.append(audio)
-            audio_padding_masks.append(cur_padding_mask)
-
-
-        # Stack into batch tensors
-        batched_audio_tensor = torch.stack(batched_audios, dim=0)
-        audio_padding_masks = torch.stack(audio_padding_masks, dim=0)
-
-        return batched_audio_tensor, audio_padding_masks
-    
     def prepare_inputs_labels(self, text_inputs, audio_inputs):
+        """
+        Prepare inputs and labels from text and audio inputs
+        Args:
+            text_inputs: dict with keys "input_ids", "position_ids", "attention_mask", "past_key_values", "labels"
+            audio_inputs: dict with keys "audios_srs"
+        Returns:
+            tuple: (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels, audio_features)
+        """
+
         input_ids = text_inputs.get("input_ids")
         position_ids = text_inputs.get("position_ids")
         attention_mask = text_inputs.get("attention_mask")
@@ -259,7 +176,6 @@ class SpeechLLM(nn.Module):
             raise ValueError("Labels contain only ignore index")
 
         audios_srs = audio_inputs.get("audios_srs", None)
-        projector_output = None
 
         if audios_srs is None:
             return (
@@ -269,7 +185,7 @@ class SpeechLLM(nn.Module):
                 past_key_values,
                 None,  # inputs_embeds
                 labels,
-                None,  # projector_output
+                None,  # audio_features
             )
 
         # Process batch of audios
@@ -283,9 +199,14 @@ class SpeechLLM(nn.Module):
                 return_attention_mask=True
             )
             projector_output = self.projector(audio_features)
+            audio_features = {
+                "audio_features": audio_features,
+                "projected_audio_features": projector_output,
+                "audio_attention_mask": audio_attention_mask,
+            }
 
 
-        # Combine processed inputs for final usage
+        # Combine text and audio inputs
         # ------------------------------------------------
 
         # Handle None values by creating default tensors
@@ -318,13 +239,6 @@ class SpeechLLM(nn.Module):
         # Initialize lists for processed inputs and labels
         new_input_embeds = []
         new_labels = []
-
-        # Process modalities
-        audio_features = {
-            "audio_features": audio_features,
-            "projected_audio_features": projector_output,
-            "audio_attention_mask": audio_attention_mask,
-        }
 
         for (
             batch_idx,
@@ -429,21 +343,21 @@ class SpeechLLM(nn.Module):
         position_ids = position_ids
         labels = new_labels_padded 
 
-        # check that the inputs_embeds are correct
-        for i in range(len(inputs_embeds)):
-            p_idx = torch.where(input_ids[i] == DEFAULT_AUDIO_TOKEN_IDX)[0][0].item()
-            text_embeds = self.text_decoder.model.get_input_embeddings()(input_ids[i][:p_idx])
-            assert torch.allclose(text_embeds, inputs_embeds[i][:p_idx])
+        # # check that the inputs_embeds are correct
+        # for i in range(len(inputs_embeds)):
+        #     p_idx = torch.where(input_ids[i] == DEFAULT_AUDIO_TOKEN_IDX)[0][0].item()
+        #     text_embeds = self.text_decoder.model.get_input_embeddings()(input_ids[i][:p_idx])
+        #     assert torch.allclose(text_embeds, inputs_embeds[i][:p_idx])
 
-            text_embeds = self.text_decoder.model.get_input_embeddings()(input_ids[i][p_idx+1:])
-            audio_len = projector_output[i][audio_attention_mask[i]].shape[0]
-            input_embeds_after_audio = inputs_embeds[i][p_idx+audio_len:][attention_mask[i][p_idx+audio_len:]]
-            assert torch.allclose(text_embeds, input_embeds_after_audio)
+        #     text_embeds = self.text_decoder.model.get_input_embeddings()(input_ids[i][p_idx+1:])
+        #     audio_len = projector_output[i][audio_attention_mask[i]].shape[0]
+        #     input_embeds_after_audio = inputs_embeds[i][p_idx+audio_len:][attention_mask[i][p_idx+audio_len:]]
+        #     assert torch.allclose(text_embeds, input_embeds_after_audio)
 
-            audio_embeds = projector_output[i][audio_attention_mask[i]]
-            assert torch.allclose(audio_embeds.to(torch.bfloat16), inputs_embeds[i][p_idx:p_idx+audio_len].to(torch.bfloat16))
+        #     audio_embeds = projector_output[i][audio_attention_mask[i]]
+        #     assert torch.allclose(audio_embeds.to(torch.bfloat16), inputs_embeds[i][p_idx:p_idx+audio_len].to(torch.bfloat16))
 
-        return None, position_ids, attention_mask, past_key_values, inputs_embeds, labels, projector_output
+        return None, position_ids, attention_mask, past_key_values, inputs_embeds, labels, audio_features
 
 
     def insert_multimodal_features(self, input_ids, labels, audio_features, batch_idx):
@@ -507,60 +421,88 @@ class SpeechLLM(nn.Module):
 
         return new_input_embeds, new_labels
 
-    @torch.no_grad()
-    def generate(self, input_ids, audios_srs=None, **kwargs):
-        """
-        Generate text from input tokens and optional audio inputs.
+    def _resample_audio(audio, orig_sr, target_sr):
+        """Resample audio tensor from orig_sr to target_sr."""
+        if orig_sr == target_sr:
+            return audio
         
+        if not TORCHAUDIO_AVAILABLE:
+            warnings.warn(f"Cannot resample audio from {orig_sr} to {target_sr}Hz - torchaudio not available")
+            return audio
+        
+        # Use torchaudio's resample function
+        resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=target_sr)
+        return resampler(audio)
+
+
+    def _process_audio_batch(self, audios_srs):
+        """
+        Process a batch of audio tuples into a batched tensor with attention masks.
+
         Args:
-            input_ids: Text token IDs
-            audios_srs: List of tuples (audio_tensor, sample_rate) for audio inputs
-            **kwargs: Additional generation arguments
-            
+            audios_srs: List of tuples (audio_tensor, sample_rate)
+
         Returns:
-            Generated token IDs
+            tuple: (batched_audio_tensor, audio_attention_mask)
+                - batched_audio_tensor: torch.Tensor of shape (batch_size, max_length)
+                - audio_attention_mask: torch.Tensor of shape (batch_size, max_length) indicating valid audio regions
         """
+        if not audios_srs:
+            return None, None
 
-        position_ids = kwargs.pop("position_ids", None)
-        attention_mask = kwargs.pop("attention_mask", None)
-        inputs_embeds = kwargs.pop("inputs_embeds", None)
-        streamer = kwargs.pop("streamer", None)
+        # Check that encoder has input_sampling_rate attribute
+        if not hasattr(self.encoder, "input_sampling_rate"):
+            raise AttributeError("Encoder must have 'input_sampling_rate' attribute.")
 
+        target_sr = self.encoder.input_sampling_rate
+        processed_audios = []
+        original_lengths = []
 
-        # Prepare inputs with audio if provided
-        if audios_srs is not None:
-            (
-                _,
-                position_ids,
-                attention_mask,
-                _,
-                inputs_embeds,
-                _,
-                _,
-            ) = self.prepare_inputs_labels(
-                text_inputs={
-                    "input_ids": input_ids,
-                    "position_ids": position_ids,
-                    "attention_mask": attention_mask,
-                    "past_key_values": None,
-                    "labels": None,  # No labels for generation
-                },
-                audio_inputs={
-                    "audios_srs": audios_srs,
-                },
+        for audio, sr in audios_srs:
+            # Ensure audio is 1D
+            if audio.dim() > 1:
+                audio = audio.squeeze()
+            # Validate audio is not empty
+            if audio.numel() == 0:
+                raise ValueError("Empty audio tensor detected. This will cause processing failures.")
+            # Resample if necessary
+            if sr != target_sr:
+                audio = _resample_audio(audio, sr, target_sr)
+            processed_audios.append(audio)
+            original_lengths.append(audio.shape[0])
+
+        if len(processed_audios) == 0:
+            return None, None
+
+        # Find max length for padding
+        max_length = max(original_lengths)
+
+        # Pad all audios to max length and create attention masks
+        batched_audios = []
+        audio_padding_masks = []
+
+        for audio, orig_len in zip(processed_audios, original_lengths):
+            padding = max_length - orig_len
+            if orig_len < max_length:
+                audio = F.pad(audio, (0, padding), mode='constant', value=0)
+
+            padding = max_length - orig_len           # always defined
+            cur_padding_mask = torch.cat(
+                [
+                    torch.zeros(orig_len,  dtype=torch.bool, device=audio.device),
+                    torch.ones (padding,   dtype=torch.bool, device=audio.device),
+                ]
             )
-            
-            # Remove input_ids since we're using inputs_embeds
-            input_ids = None
-        
-        # Call text decoder's generate method
-        return self.text_decoder.generate(
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds,
-            streamer=streamer,
-            **kwargs
-        )
+
+            batched_audios.append(audio)
+            audio_padding_masks.append(cur_padding_mask)
+
+
+        # Stack into batch tensors
+        batched_audio_tensor = torch.stack(batched_audios, dim=0)
+        audio_padding_masks = torch.stack(audio_padding_masks, dim=0)
+
+        return batched_audio_tensor, audio_padding_masks
 
     @property
     def device(self):
@@ -571,42 +513,6 @@ class SpeechLLM(nn.Module):
     def dtype(self):
         """Get the dtype of the model."""
         return next(self.parameters()).dtype
-
-    @classmethod
-    def from_pretrained(cls, model_path, **kwargs):
-        """Load a pretrained model from a directory."""
-        import os
-        
-        # Load configuration
-        config = SpeechLLMConfig.from_pretrained(model_path)
-        
-        # Create model
-        model = cls(config)
-        
-        # Load state dict
-        if os.path.isdir(model_path):
-            # Look for pytorch_model.bin or model.safetensors
-            state_dict_path = None
-            if os.path.exists(os.path.join(model_path, "pytorch_model.bin")):
-                state_dict_path = os.path.join(model_path, "pytorch_model.bin")
-                state_dict = torch.load(state_dict_path, map_location="cpu")
-            elif os.path.exists(os.path.join(model_path, "model.safetensors")):
-                try:
-                    from safetensors.torch import load_file
-                    state_dict = load_file(os.path.join(model_path, "model.safetensors"))
-                except ImportError:
-                    raise ImportError("safetensors is required to load .safetensors files. Install with: pip install safetensors")
-            else:
-                raise FileNotFoundError(f"No model weights found in {model_path}")
-            
-            # Load state dict with error handling
-            try:
-                model.load_state_dict(state_dict, strict=True)
-            except Exception as e:
-                print(f"Warning: Could not load state dict strictly: {e}")
-                model.load_state_dict(state_dict, strict=False)
-        
-        return model
 
 
 if __name__ == "__main__":

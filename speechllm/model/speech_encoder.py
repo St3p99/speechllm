@@ -11,11 +11,6 @@ class WavLMEncoder(nn.Module):
     """
     Wrapper class for the WavLM Large model from Hugging Face Transformers.
 
-    This model takes raw waveforms as input (shape: (batch_size, samples))
-    and returns an embedding by taking the average over the last hidden
-    state. It is typically used for tasks such as speech recognition or
-    speaker embedding.
-
     Parameters
     ----------
     _name_or_path : str, optional
@@ -72,28 +67,6 @@ class WavLMEncoder(nn.Module):
             attention_mask: Optional[torch.Tensor] = None,
             return_attention_mask: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass through the WavLM model.
-
-        Parameters
-        ----------
-        waveforms : torch.Tensor
-            Input tensor of shape (batch_size, samples).
-        attention_mask : torch.Tensor, optional
-            Attention mask tensor of shape (batch_size, samples) indicating valid audio regions.
-            1 for valid audio, 0 for padding.
-        return_attention_mask : bool, optional
-            Whether to return the attention mask for the encoded features.
-
-        Returns
-        -------
-        torch.Tensor or tuple
-            If return_attention_mask=False:
-                torch.Tensor: Embedding tensor of shape (batch_size, sequence_length, hidden_dim * stack_size).
-            If return_attention_mask=True:
-                tuple: (embeddings, attention_mask) where attention_mask has shape (batch_size, sequence_length)
-                Padded regions are set to zero.
-        """
         if not isinstance(waveforms, torch.Tensor):
             raise TypeError("Expected 'waveforms' to be a torch.Tensor.")
         
@@ -154,11 +127,6 @@ class WavLMEncoder(nn.Module):
 class HubertEncoder(nn.Module):
     """
     Wrapper class for the Hubert model from Hugging Face Transformers.
-
-    This model takes raw waveforms as input (shape: (batch_size, samples))
-    and returns an embedding by taking the average over the last hidden
-    state. It is typically used for tasks such as speech recognition or
-    speaker embedding.
 
     Parameters
     ----------
@@ -275,28 +243,6 @@ class HubertEncoder(nn.Module):
             attention_mask: Optional[torch.Tensor] = None,
             return_attention_mask: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass through the Hubert model.
-
-        Parameters
-        ----------
-        waveforms : torch.Tensor
-            Input tensor of shape (batch_size, samples).
-        attention_mask : torch.Tensor, optional
-            Attention mask tensor of shape (batch_size, samples) indicating valid audio regions.
-            1 for valid audio, 0 for padding.
-        return_attention_mask : bool, optional
-            Whether to return the attention mask for the encoded features.
-
-        Returns
-        -------
-        torch.Tensor or tuple
-            If return_attention_mask=False:
-                torch.Tensor: Embedding tensor of shape (batch_size, sequence_length, hidden_dim * stack_size).
-            If return_attention_mask=True:
-                tuple: (embeddings, attention_mask) where attention_mask has shape (batch_size, sequence_length)
-                Padded regions are set to zero.
-        """
         if not isinstance(waveforms, torch.Tensor):
             raise TypeError("Expected 'waveforms' to be a torch.Tensor.")
         
