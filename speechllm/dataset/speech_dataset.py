@@ -40,7 +40,16 @@ class SpeechDataset(TorchDataset):
         logger.info(f"Loaded {len(self.dataset)} samples")
 
     def _load_dataset(self):
-        """Load the dataset from the data path."""
+        if self.data_path == None:
+            # For demo purposes, hardcoding parler-tts/libritts_r_filtered clean train.clean.100
+            dataset = load_dataset(
+                "parler-tts/libritts_r_filtered",
+                "clean",
+                split="train.clean.100",
+            )
+            return dataset
+
+        # load the dataset from local parquet files
         data_path = self._get_dataset_path()
 
         # Parse amount parameter
