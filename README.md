@@ -14,7 +14,7 @@ SpeechLLM implements a neural architecture for automatic speech recognition by i
 - PyTorch 2.3.1+
 - CUDA (recommended for GPU training)
 
-### Install from Source
+### Installation
 
 ```bash
 git clone <repository-url>
