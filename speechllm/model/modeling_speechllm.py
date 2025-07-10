@@ -25,7 +25,7 @@ class SpeechLLM(nn.Module):
         self.config = config
         self.log_eval = True
 
-        if "wavlm" in config.speech_encoder_name_or_path:
+        if "wavlm" in config.speech_encoder_name_or_path.lower():
             self.encoder = WavLMEncoder(
                 _name_or_path=config.speech_encoder_name_or_path,
                 stack_size=config.downsample_factor,
@@ -35,12 +35,16 @@ class SpeechLLM(nn.Module):
                 f"Unsupported speech encoder: {config.speech_encoder_name_or_path}"
             )
 
-        # Create text decoder with tie_word_embeddings configuration
-        self.text_decoder = LlamaDecoder(
-            name_or_path=config.text_decoder_name_or_path,
-            conversation_version=config.conversation_version,
-            config_dict={"tie_word_embeddings": config.tie_word_embeddings},
-        )
+        if "llama-3" in config.text_decoder_name_or_path.lower():
+            self.text_decoder = LlamaDecoder(
+                name_or_path=config.text_decoder_name_or_path,
+                conversation_version=config.conversation_version,
+                config_dict={"tie_word_embeddings": config.tie_word_embeddings},
+            )
+        else:
+            raise ValueError(
+                f"Unsupported text decoder: {config.text_decoder_name_or_path}"
+            )
 
         self.projector = MLPProjector(
             input_dim=self.encoder.output_hidden_size,
