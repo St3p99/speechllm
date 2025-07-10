@@ -4,7 +4,8 @@ from typing import Optional, Tuple, Union
 from speechllm.model.downsample import Downsample
 import torch
 import torch.nn as nn
-from transformers import WavLMConfig, WavLMModel
+import torch.nn.functional as F
+from transformers import WavLMConfig, WavLMModel, AutoFeatureExtractor
 
 
 class WavLMEncoder(nn.Module):
@@ -35,11 +36,12 @@ class WavLMEncoder(nn.Module):
         self.config = WavLMConfig.from_pretrained(_name_or_path)
         self.model = WavLMModel.from_pretrained(_name_or_path)
         self.downsample = Downsample(stack_size=stack_size)
+        self.feature_extractor = AutoFeatureExtractor.from_pretrained(_name_or_path)
 
     @property
     def input_sampling_rate(self) -> int:
         """Return the expected input sampling rate."""
-        return 16000  # FIXME: Hardcoded
+        return self.feature_extractor.sampling_rate
 
     @property
     def output_sampling_rate(self) -> float:
@@ -57,6 +59,52 @@ class WavLMEncoder(nn.Module):
     def output_hidden_size(self) -> int:
         """Return the actual output hidden size after downsampling."""
         return self.config.hidden_size * self.downsample.stack_size
+
+    def _create_downsampled_attention_mask(self, attention_mask: torch.Tensor, window_size: int, output_seq_len: int) -> torch.Tensor:
+        """
+        Create downsampled attention mask using vectorized unfold operation.
+        
+        This unified function handles both encoding and final downsampling steps by applying
+        a sliding window of size `window_size` with stride equal to `window_size`.
+        
+        Parameters
+        ----------
+        attention_mask : torch.Tensor
+            Input attention mask with shape (batch_size, input_seq_len)
+        window_size : int
+            Size of the sliding window (stride or stack_size)
+        output_seq_len : int
+            Expected length of output sequence
+            
+        Returns
+        -------
+        torch.Tensor
+            Downsampled attention mask with shape (batch_size, output_seq_len)
+        """
+        batch_size = attention_mask.shape[0]
+        input_seq_len = attention_mask.shape[1]
+        
+        # Calculate required padded length
+        padded_len = output_seq_len * window_size
+        
+        if padded_len > input_seq_len:
+            # Pad the attention mask to make it divisible by window_size
+            padding = padded_len - input_seq_len
+            attention_mask_padded = F.pad(attention_mask, (0, padding), value=False)
+        else:
+            # Truncate if necessary
+            attention_mask_padded = attention_mask[:, :padded_len]
+        
+        # Use unfold to create sliding windows
+        # unfold(dimension, size, step) creates sliding windows
+        # Shape after unfold: (batch_size, output_seq_len, window_size)
+        windowed = attention_mask_padded.unfold(1, window_size, window_size)
+        
+        # Check if any element in each window is True
+        # Shape: (batch_size, output_seq_len)
+        downsampled_attention_mask = windowed.any(dim=2)
+        
+        return downsampled_attention_mask
 
     @torch.no_grad()
     def forward(
@@ -98,13 +146,18 @@ class WavLMEncoder(nn.Module):
             batch_size, encoded_seq_len, dtype=torch.bool, device=x.device
         )
 
-        for i in range(encoded_seq_len):
-            start_idx = i * total_stride
-            end_idx = min(start_idx + total_stride, attention_mask.shape[1])
-            # If any part of the window is valid, mark the encoded position as valid
-            encoded_attention_mask[:, i] = attention_mask[:, start_idx:end_idx].any(
-                dim=1
-            )
+        # for i in range(encoded_seq_len):
+        #     start_idx = i * total_stride
+        #     end_idx = min(start_idx + total_stride, attention_mask.shape[1])
+        #     # If any part of the window is valid, mark the encoded position as valid
+        #     encoded_attention_mask[:, i] = attention_mask[:, start_idx:end_idx].any(
+        #         dim=1
+        #     )
+
+        # Vectorized version of the loop above
+        encoded_attention_mask = self._create_downsampled_attention_mask(
+            attention_mask, total_stride, encoded_seq_len
+        )
 
         # Apply the mask to the encoded features
         x = x * encoded_attention_mask.unsqueeze(-1).float()
@@ -118,15 +171,20 @@ class WavLMEncoder(nn.Module):
             batch_size, final_seq_len, dtype=torch.bool, device=x.device
         )
 
-        for i in range(final_seq_len):
-            start_idx = i * self.downsample.stack_size
-            end_idx = min(
-                start_idx + self.downsample.stack_size, encoded_attention_mask.shape[1]
-            )
-            # If any part of the stacked window is valid, mark the final position as valid
-            final_attention_mask[:, i] = encoded_attention_mask[
-                :, start_idx:end_idx
-            ].any(dim=1)
+        # for i in range(final_seq_len):
+        #     start_idx = i * self.downsample.stack_size
+        #     end_idx = min(
+        #         start_idx + self.downsample.stack_size, encoded_attention_mask.shape[1]
+        #     )
+        #     # If any part of the stacked window is valid, mark the final position as valid
+        #     final_attention_mask[:, i] = encoded_attention_mask[
+        #         :, start_idx:end_idx
+        #     ].any(dim=1)
+
+        # Vectorized version of the loop above
+        final_attention_mask = self._create_downsampled_attention_mask(
+            encoded_attention_mask, self.downsample.stack_size, final_seq_len
+        )
 
         # Apply final mask to the output features
         x = x * final_attention_mask.unsqueeze(-1).float()
