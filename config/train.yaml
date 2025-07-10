@@ -45,5 +45,5 @@ model:
   downsample_factor: 5
   conversation_version: "llama_3_1"
   projector_n_layers: 2
-  projector_activation: "leaky_relu"
+  projector_activation: "relu"
   projector_hidden_size: 2048
