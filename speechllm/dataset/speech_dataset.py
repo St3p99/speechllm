@@ -24,6 +24,7 @@ class SpeechDataset(TorchDataset):
 
         # Unpack all DataArguments fields as attributes of this class
         self.data_path = data_args.data_path
+        self.subset = data_args.subset
         self.split = data_args.split
         self.amount = data_args.amount
         self.min_duration = data_args.min_duration
@@ -41,70 +42,17 @@ class SpeechDataset(TorchDataset):
         logger.info(f"Loaded {len(self.dataset)} samples")
 
     def _load_dataset(self):
-        if self.data_path == None:
-            # For demo purposes, hardcoding parler-tts/libritts_r_filtered clean train.clean.100
-            dataset = load_dataset(
-                "parler-tts/libritts_r_filtered",
-                "clean",
-                split="train.clean.100",
-            )
-            return dataset
-
-        # load the dataset from local parquet files
-        data_path = self._get_dataset_path()
-
         # Parse amount parameter
         if self.amount is None:
             split_str = self.split
         elif isinstance(self.amount, str):
-            # Handle :10, :100, etc.
+            # Handle :10, :100, :10% etc.
             split_str = f"{self.split}[{self.amount}]"
         else:
-            # Handle other formats
             split_str = self.split
 
-        datasets = []
-        if isinstance(data_path, list):
-            for path in data_path:
-                ds = load_dataset(
-                    "parquet",
-                    data_files={self.split: path},
-                    split=split_str,
-                )
-                datasets.append(ds)
-            dataset = (
-                concatenate_datasets(datasets) if len(datasets) > 1 else datasets[0]
-            )
-        else:
-            dataset = load_dataset(
-                "parquet",
-                data_files={self.split: data_path},
-                split=split_str,
-            )
+        dataset = load_dataset(self.data_path, self.subset, split=split_str)
         return dataset
-
-    def _get_dataset_path(self):
-        """Get the path to the dataset parquet file."""
-        data_path = Path(self.data_path)
-        if self.split == "train":
-            filename = "train.clean.100.parquet"
-        elif self.split == "train_full":
-            filename = [
-                "train.clean.100.parquet",
-                "train.clean.360.parquet",
-                "train.other.500.parquet",
-            ]
-        elif self.split == "validation":
-            filename = "dev.clean.parquet"
-        elif self.split == "test":
-            filename = "test.clean.parquet"
-        else:
-            filename = f"{self.split}/data.parquet"
-        return (
-            str(data_path / filename)
-            if isinstance(filename, str)
-            else [str(data_path / f) for f in filename]
-        )
 
     def __len__(self):
         return len(self.dataset)

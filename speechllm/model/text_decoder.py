@@ -121,9 +121,6 @@ class HfTextDecoder(torch.nn.Module, metaclass=ABCMeta):
         torch.set_default_dtype(default_dtype)
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
 
-        # Hook this wrapper's config to the model's config so that each
-        # update to `self.config` is reflected in the model's config and
-        # vice versa
         self.config = self.model.config
 
         if conversation_version is None:

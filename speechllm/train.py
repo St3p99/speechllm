@@ -145,7 +145,7 @@ if __name__ == "__main__":
         "--config",
         type=str,
         required=False,
-        default="/net/tscratch/people/plgstefanop/speechllm/speechllm/config/train.yaml",
+        default="config/train.yaml",
     )
     args = parser.parse_args()
 

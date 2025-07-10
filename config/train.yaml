@@ -1,5 +1,7 @@
 data:
-  # hardcoded parler-tts/libritts_r_filtered for demo purposes, will be automatically loaded from the hub
+  data_path: "parler-tts/libritts_r_filtered"
+  subset: "clean"
+  split: "train.clean.100"
   amount: ":100%"
   remap_keys: {"text_normalized": "transcription"} # this will map 'text_normalized' field to 'transcription' in the dataset (parler-tts/libritts_r_filtered)
   sampling_rate: 16000
@@ -9,7 +11,7 @@ data:
 
 training:
   # General parameters
-  output_dir: /net/tscratch/people/plgstefanop/speechllm/speechllm/output/
+  output_dir: ./output/
   freeze_modules: ["encoder", "text_decoder"]
   remove_unused_columns: false
 
@@ -17,7 +19,7 @@ training:
   num_train_epochs: 3
   per_device_train_batch_size: 4
   gradient_accumulation_steps: 1
-  learning_rate: 1e-4
+  learning_rate: 4e-3
   warmup_steps: 1000
   bf16: true
   lr_scheduler_type: cosine
@@ -41,5 +43,5 @@ model:
   downsample_factor: 5
   conversation_version: "llama_3_1"
   projector_n_layers: 2
-  projector_activation: "relu"
+  projector_activation: "leaky_relu"
   projector_hidden_size: 2048

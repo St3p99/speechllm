@@ -42,20 +42,6 @@ class SpeechLLM(nn.Module):
             config_dict={"tie_word_embeddings": config.tie_word_embeddings},
         )
 
-        # Apply tie_word_embeddings setting after initialization if needed
-        # if hasattr(self.text_decoder.model, "tie_weights"):
-        #     if config.tie_word_embeddings:
-        #         self.text_decoder.model.tie_weights()
-        #     else:
-        #         # Untie weights by copying the embedding weights to lm_head
-        #         embed_tokens = self.text_decoder.model.get_input_embeddings()
-        #         lm_head = self.text_decoder.model.get_output_embeddings()
-        #         if lm_head is not None and embed_tokens is not None:
-        #             if lm_head.weight.data_ptr() == embed_tokens.weight.data_ptr():
-        #                 # Only untie if they're currently tied
-        #                 lm_head.weight = nn.Parameter(embed_tokens.weight.clone())
-        #                 logger.info("Untied word embeddings to fix shared memory issue")
-
         self.projector = MLPProjector(
             input_dim=self.encoder.output_hidden_size,
             output_dim=self.text_decoder.hidden_size,
@@ -360,7 +346,7 @@ class SpeechLLM(nn.Module):
         position_ids = position_ids
         labels = new_labels_padded
 
-        # # check that the inputs_embeds are correct
+        # DEBUG: check that the inputs_embeds are correct
         # for i in range(len(inputs_embeds)):
         #     p_idx = torch.where(input_ids[i] == DEFAULT_AUDIO_TOKEN_IDX)[0][0].item()
         #     text_embeds = self.text_decoder.model.get_input_embeddings()(input_ids[i][:p_idx])

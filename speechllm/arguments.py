@@ -9,6 +9,7 @@ class DataArguments:
     data_path: str = field(
         default=None, metadata={"help": "Path to the training data config."}
     )
+    subset: str = field(default=None, metadata={"help": "Subset to use for training."})
     split: str = field(default=None, metadata={"help": "Split to use for training."})
     amount: str = field(
         default=None, metadata={"help": "Amount of data to use for training."}
