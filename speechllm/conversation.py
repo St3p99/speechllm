@@ -2,9 +2,12 @@ import dataclasses
 from enum import Enum, auto
 from typing import List
 
+
 class SeparatorStyle(Enum):
     """Different separator style."""
+
     MPT = auto()
+
 
 @dataclasses.dataclass
 class Conversation:
@@ -22,7 +25,7 @@ class Conversation:
     skip_next: bool = False
 
     def get_prompt(self):
-        # Only handle MPT (llama_3) style, no image
+        # Only handle MPT style
         if self.sep_style == SeparatorStyle.MPT:
             ret = self.system + self.sep
             for role, message in self.messages:
@@ -60,6 +63,7 @@ class Conversation:
             "sep": self.sep,
             "sep2": self.sep2,
         }
+
 
 conv_llama_3_1 = Conversation(
     system="""<|start_header_id|>system<|end_header_id|>\n\nA chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions.""",

@@ -1,19 +1,20 @@
+import logging
+
+from speechllm.constants import DEFAULT_AUDIO_TOKEN_IDX, IGNORE_INDEX
+from speechllm.conversation import Conversation
+from speechllm.model.configuration_speechllm import SpeechLLMConfig
+from speechllm.model.projector import MLPProjector
+from speechllm.model.speech_encoder import WavLMEncoder
+from speechllm.model.text_decoder import LlamaDecoder
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 
-from speechllm.conversation import Conversation
-from speechllm.constants import IGNORE_INDEX, DEFAULT_AUDIO_TOKEN_IDX
-from speechllm.model.speech_encoder import WavLMEncoder, HubertEncoder
-from speechllm.model.projector import MLPProjector
-from speechllm.model.text_decoder import LlamaDecoder
-from speechllm.model.configuration_speechllm import SpeechLLMConfig
-
-import logging
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 class SpeechLLM(nn.Module):
     def __init__(
@@ -22,37 +23,41 @@ class SpeechLLM(nn.Module):
     ):
         super().__init__()
         self.config = config
+        self.log_eval = True
 
         if "wavlm" in config.speech_encoder_name_or_path:
-            self.encoder = WavLMEncoder(_name_or_path=config.speech_encoder_name_or_path, stack_size=config.downsample_factor)
-        elif "hubert" in config.speech_encoder_name_or_path:
-            self.encoder = HubertEncoder(_name_or_path=config.speech_encoder_name_or_path, stack_size=config.downsample_factor)
+            self.encoder = WavLMEncoder(
+                _name_or_path=config.speech_encoder_name_or_path,
+                stack_size=config.downsample_factor,
+            )
         else:
-            raise ValueError(f"Unsupported speech encoder: {config.speech_encoder_name_or_path}")
-        
+            raise ValueError(
+                f"Unsupported speech encoder: {config.speech_encoder_name_or_path}"
+            )
+
         # Create text decoder with tie_word_embeddings configuration
         self.text_decoder = LlamaDecoder(
-            name_or_path=config.text_decoder_name_or_path, 
+            name_or_path=config.text_decoder_name_or_path,
             conversation_version=config.conversation_version,
-            config_dict={"tie_word_embeddings": config.tie_word_embeddings}
+            config_dict={"tie_word_embeddings": config.tie_word_embeddings},
         )
-        
+
         # Apply tie_word_embeddings setting after initialization if needed
-        if hasattr(self.text_decoder.model, 'tie_weights'):
-            if config.tie_word_embeddings:
-                self.text_decoder.model.tie_weights()
-            else:
-                # Untie weights by copying the embedding weights to lm_head
-                embed_tokens = self.text_decoder.model.get_input_embeddings()
-                lm_head = self.text_decoder.model.get_output_embeddings()
-                if lm_head is not None and embed_tokens is not None:
-                    if lm_head.weight.data_ptr() == embed_tokens.weight.data_ptr():
-                        # Only untie if they're currently tied
-                        lm_head.weight = nn.Parameter(embed_tokens.weight.clone())
-                        logger.info("Untied word embeddings to fix shared memory issue")
-        
+        # if hasattr(self.text_decoder.model, "tie_weights"):
+        #     if config.tie_word_embeddings:
+        #         self.text_decoder.model.tie_weights()
+        #     else:
+        #         # Untie weights by copying the embedding weights to lm_head
+        #         embed_tokens = self.text_decoder.model.get_input_embeddings()
+        #         lm_head = self.text_decoder.model.get_output_embeddings()
+        #         if lm_head is not None and embed_tokens is not None:
+        #             if lm_head.weight.data_ptr() == embed_tokens.weight.data_ptr():
+        #                 # Only untie if they're currently tied
+        #                 lm_head.weight = nn.Parameter(embed_tokens.weight.clone())
+        #                 logger.info("Untied word embeddings to fix shared memory issue")
+
         self.projector = MLPProjector(
-            input_dim=self.encoder.output_hidden_size, 
+            input_dim=self.encoder.output_hidden_size,
             output_dim=self.text_decoder.hidden_size,
             hidden_size=self.config.projector_hidden_size,
             hidden_layers=self.config.projector_n_layers,
@@ -69,52 +74,64 @@ class SpeechLLM(nn.Module):
             module = getattr(self, module_name)
             if module is not None:
                 module.requires_grad_(False)
-        
-        # Validate that at least some parameters are trainable
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.parameters())
-        
-        if trainable_params == 0:
-            raise ValueError(
-                "No trainable parameters found! The model will not learn. "
-                "Check your freeze_modules setting."
-            )
-        
-        print(f"🔧 Trainable parameters: {trainable_params:,} / {total_params:,} "
-              f"({100*trainable_params/total_params:.1f}%)")
-        
-        # Report which modules are trainable
+
+        all_trainable_params = 0
+
+        # Report which modules and how many parameters are trainable
         for name, module in self.named_children():
             is_trainable = any(p.requires_grad for p in module.parameters())
             status = "✅ TRAINABLE" if is_trainable else "❄️ FROZEN"
             param_count = sum(p.numel() for p in module.parameters())
             print(f"  {name}: {status} ({param_count:,} params)")
+            # Print trainable submodules if any
+            if is_trainable:
+                print(f"    Trainable submodules in {name}:")
+                for sub_name, sub_module in module.named_modules():
+                    if sub_name == "":
+                        continue
+                    trainable_params = [
+                        p
+                        for p in sub_module.parameters(recurse=False)
+                        if p.requires_grad
+                    ]
+                    if trainable_params:
+                        sub_param_count = sum(p.numel() for p in trainable_params)
+                        all_trainable_params += sub_param_count
+                        print(f"      {sub_name}: {sub_param_count:,} trainable params")
 
-    def forward(self, input_ids, audios_srs=None, attention_mask=None, position_ids=None, input_embeds=None, labels=None, past_key_values=None, use_cache=None, output_attentions=None, output_hidden_states=None, return_dict=None, **kwargs):
-        """
-        Forward pass through the SpeechLLM model.
-        
-        Args:
-            input_ids: Text token IDs
-            audios_srs: List of tuples (audio_tensor, sample_rate) for audio inputs
-            attention_mask: Attention mask for text tokens
-            position_ids: Position IDs for text tokens
-            input_embeds: Pre-computed input embeddings (if provided, skips embedding computation)
-            labels: Labels for training
-            past_key_values: Past key values for generation
-            use_cache: Whether to use cache for generation
-            output_attentions: Whether to output attention weights
-            output_hidden_states: Whether to output hidden states
-            return_dict: Whether to return as a dictionary
-            **kwargs: Additional keyword arguments
-            
-        Returns:
-            Model output with properly handled attention for both text and audio inputs.
-            
-        Note:
-            Audio inputs are automatically padded and masked to handle variable-length sequences
-        """
+        # Count total parameters
+        total_params = sum(p.numel() for p in self.parameters())
 
+        # Validate that at least some parameters are trainable
+        if all_trainable_params == 0:
+            raise RuntimeError(
+                "No trainable parameters found! The model will not learn. "
+                "Check your freeze_modules setting."
+            )
+
+        percent_trainable = (
+            (100 * all_trainable_params / total_params) if total_params > 0 else 0.0
+        )
+        print(
+            f"🔧 Trainable parameters: {all_trainable_params:,} / {total_params:,} "
+            f"({percent_trainable:.1f}%)"
+        )
+
+    def forward(
+        self,
+        input_ids,
+        audios_srs=None,
+        attention_mask=None,
+        position_ids=None,
+        input_embeds=None,
+        labels=None,
+        past_key_values=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        **kwargs,
+    ):
         if input_embeds is None:
             # build inputs_embeds, labels,.. from text and audio inputs
             (
@@ -139,7 +156,7 @@ class SpeechLLM(nn.Module):
             )
         else:
             inputs_embeds = input_embeds
-        
+
         model_output = self.text_decoder(
             input_ids=input_ids if inputs_embeds is None else None,
             attention_mask=attention_mask,
@@ -154,7 +171,7 @@ class SpeechLLM(nn.Module):
         )
 
         return model_output
-    
+
     def prepare_inputs_labels(self, text_inputs, audio_inputs):
         """
         Prepare inputs and labels from text and audio inputs
@@ -190,13 +207,15 @@ class SpeechLLM(nn.Module):
 
         # Process batch of audios
         batched_audios, audio_padding_masks = self._process_audio_batch(audios_srs)
-        audio_valid_mask = ~audio_padding_masks
+        audio_valid_mask = (
+            ~audio_padding_masks if audio_padding_masks is not None else None
+        )
         if batched_audios is not None:
             # Pass batched tensor and attention masks to encoder
             audio_features, audio_attention_mask = self.encoder(
-                batched_audios, 
+                batched_audios,
                 attention_mask=audio_valid_mask,
-                return_attention_mask=True
+                return_attention_mask=True,
             )
             projector_output = self.projector(audio_features)
             audio_features = {
@@ -204,7 +223,6 @@ class SpeechLLM(nn.Module):
                 "projected_audio_features": projector_output,
                 "audio_attention_mask": audio_attention_mask,
             }
-
 
         # Combine text and audio inputs
         # ------------------------------------------------
@@ -227,9 +245,7 @@ class SpeechLLM(nn.Module):
         # remove padding using attention_mask
         input_ids = [
             cur_input_ids[cur_attention_mask]
-            for cur_input_ids, cur_attention_mask in zip(
-                input_ids, attention_mask
-            )
+            for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask)
         ]
         labels = [
             cur_labels[cur_attention_mask]
@@ -247,8 +263,9 @@ class SpeechLLM(nn.Module):
             cur_labels = labels[batch_idx]
 
             cur_new_input_embeds, cur_new_labels = self.insert_multimodal_features(
-                cur_input_ids, cur_labels, audio_features, batch_idx)
-            
+                cur_input_ids, cur_labels, audio_features, batch_idx
+            )
+
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
 
@@ -288,7 +305,7 @@ class SpeechLLM(nn.Module):
             zip(new_input_embeds, new_labels)
         ):
             cur_len = cur_new_embed.shape[0]
-            padding_side = getattr(self.text_decoder.tokenizer, 'padding_side', 'right')
+            padding_side = getattr(self.text_decoder.tokenizer, "padding_side", "right")
             if padding_side == "left":
                 logger.warning(f"Padding left for batch {i}")
                 new_input_embeds_padded.append(
@@ -341,7 +358,7 @@ class SpeechLLM(nn.Module):
         inputs_embeds = torch.stack(new_input_embeds_padded, dim=0)
         attention_mask = attention_mask
         position_ids = position_ids
-        labels = new_labels_padded 
+        labels = new_labels_padded
 
         # # check that the inputs_embeds are correct
         # for i in range(len(inputs_embeds)):
@@ -357,8 +374,15 @@ class SpeechLLM(nn.Module):
         #     audio_embeds = projector_output[i][audio_attention_mask[i]]
         #     assert torch.allclose(audio_embeds.to(torch.bfloat16), inputs_embeds[i][p_idx:p_idx+audio_len].to(torch.bfloat16))
 
-        return None, position_ids, attention_mask, past_key_values, inputs_embeds, labels, audio_features
-
+        return (
+            None,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            inputs_embeds,
+            labels,
+            audio_features,
+        )
 
     def insert_multimodal_features(self, input_ids, labels, audio_features, batch_idx):
         """
@@ -373,8 +397,12 @@ class SpeechLLM(nn.Module):
             new_labels: torch.Tensor, shape (n_total_tokens,)
         """
         # Find all audio placeholder indices
-        audio_placeholder_indices = (input_ids == DEFAULT_AUDIO_TOKEN_IDX).nonzero(as_tuple=True)[0].tolist()
-        assert len(audio_placeholder_indices) == 1, "Only one audio placeholder token is supported"
+        audio_placeholder_indices = (
+            (input_ids == DEFAULT_AUDIO_TOKEN_IDX).nonzero(as_tuple=True)[0].tolist()
+        )
+        assert (
+            len(audio_placeholder_indices) == 1
+        ), "Only one audio placeholder token is supported"
 
         new_input_embeds = []
         new_labels = []
@@ -387,14 +415,20 @@ class SpeechLLM(nn.Module):
                 text_embeds = self.text_decoder.model.get_input_embeddings()(
                     input_ids[last_idx:idx]
                 )
-                new_input_embeds.append(text_embeds)  # Use the entire text_embeds tensor
+                new_input_embeds.append(
+                    text_embeds
+                )  # Use the entire text_embeds tensor
                 new_labels.append(labels[last_idx:idx])
 
             # Insert audio features for this batch
             if audio_features is not None:
-                projected_audio_features = audio_features["projected_audio_features"][batch_idx]
+                projected_audio_features = audio_features["projected_audio_features"][
+                    batch_idx
+                ]
                 audio_attention_mask = audio_features["audio_attention_mask"][batch_idx]
-                audio_to_append = projected_audio_features[audio_attention_mask].to(device=input_ids.device)
+                audio_to_append = projected_audio_features[audio_attention_mask].to(
+                    device=input_ids.device
+                )
                 new_input_embeds.append(audio_to_append)
                 new_labels.append(
                     torch.full(
@@ -421,19 +455,16 @@ class SpeechLLM(nn.Module):
 
         return new_input_embeds, new_labels
 
-    def _resample_audio(audio, orig_sr, target_sr):
+    def _resample_audio(self, audio, orig_sr, target_sr):
         """Resample audio tensor from orig_sr to target_sr."""
         if orig_sr == target_sr:
             return audio
-        
-        if not TORCHAUDIO_AVAILABLE:
-            warnings.warn(f"Cannot resample audio from {orig_sr} to {target_sr}Hz - torchaudio not available")
-            return audio
-        
-        # Use torchaudio's resample function
-        resampler = torchaudio.transforms.Resample(orig_freq=orig_sr, new_freq=target_sr)
-        return resampler(audio)
 
+        # Use torchaudio's resample function
+        resampler = torchaudio.transforms.Resample(
+            orig_freq=orig_sr, new_freq=target_sr
+        )
+        return resampler(audio)
 
     def _process_audio_batch(self, audios_srs):
         """
@@ -464,10 +495,12 @@ class SpeechLLM(nn.Module):
                 audio = audio.squeeze()
             # Validate audio is not empty
             if audio.numel() == 0:
-                raise ValueError("Empty audio tensor detected. This will cause processing failures.")
+                raise ValueError(
+                    "Empty audio tensor detected. This will cause processing failures."
+                )
             # Resample if necessary
             if sr != target_sr:
-                audio = _resample_audio(audio, sr, target_sr)
+                audio = self._resample_audio(audio, sr, target_sr)
             processed_audios.append(audio)
             original_lengths.append(audio.shape[0])
 
@@ -484,19 +517,18 @@ class SpeechLLM(nn.Module):
         for audio, orig_len in zip(processed_audios, original_lengths):
             padding = max_length - orig_len
             if orig_len < max_length:
-                audio = F.pad(audio, (0, padding), mode='constant', value=0)
+                audio = F.pad(audio, (0, padding), mode="constant", value=0)
 
-            padding = max_length - orig_len           # always defined
+            padding = max_length - orig_len  # always defined
             cur_padding_mask = torch.cat(
                 [
-                    torch.zeros(orig_len,  dtype=torch.bool, device=audio.device),
-                    torch.ones (padding,   dtype=torch.bool, device=audio.device),
+                    torch.zeros(orig_len, dtype=torch.bool, device=audio.device),
+                    torch.ones(padding, dtype=torch.bool, device=audio.device),
                 ]
             )
 
             batched_audios.append(audio)
             audio_padding_masks.append(cur_padding_mask)
-
 
         # Stack into batch tensors
         batched_audio_tensor = torch.stack(batched_audios, dim=0)

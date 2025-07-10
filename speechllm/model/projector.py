@@ -1,6 +1,8 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
-from typing import Optional
+
 
 class MLPProjector(nn.Module):
     """
@@ -15,12 +17,13 @@ class MLPProjector(nn.Module):
         dropout (float, optional): Dropout probability. Defaults to 0.0.
         residual (bool, optional): Whether to add a linear residual if input_dim != output_dim. Defaults to False.
     """
+
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
         hidden_size: Optional[int] = None,
-        hidden_layers: int = 1,
+        hidden_layers: int = 2,
         activation: str = "relu",
         dropout: float = 0.0,
         residual: bool = False,
@@ -79,4 +82,3 @@ class MLPProjector(nn.Module):
                 res = x
             out = out + res
         return out
-

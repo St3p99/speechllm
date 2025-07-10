@@ -1,16 +1,20 @@
 import copy
-import re
 from dataclasses import dataclass
+import logging
+import re
 from typing import Dict, Sequence
 
+from speechllm import conversation as conversation_lib
+from speechllm.constants import (
+    DEFAULT_AUDIO_TOKEN,
+    DEFAULT_AUDIO_TOKEN_IDX,
+    IGNORE_INDEX,
+)
 import torch
 import transformers
 
-import logging
-from speechllm import conversation as conversation_lib
-from speechllm.constants import IGNORE_INDEX, DEFAULT_AUDIO_TOKEN, DEFAULT_AUDIO_TOKEN_IDX
-
 logger = logging.getLogger(__name__)
+
 
 def _tokenize_fn(
     strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer
@@ -26,9 +30,7 @@ def _tokenize_fn(
         )
         for text in strings
     ]
-    input_ids = labels = [
-        tokenized.input_ids[0] for tokenized in tokenized_list
-    ]
+    input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
     input_ids_lens = labels_lens = [
         tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item()
         for tokenized in tokenized_list
@@ -73,6 +75,7 @@ def _add_speaker_and_signal(header, source, get_conversation=True):
     conversation += BEGIN_SIGNAL
     return conversation
 
+
 def preprocess_llama3(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
@@ -99,12 +102,20 @@ def preprocess_llama3(
     # Tokenize conversations
     if has_audio:
         # we need to skip the audio placeholder token and put it back as -300
-        input_ids = torch.stack([
-            tokenizer_mm_token(prompt, tokenizer, return_tensors="pt") 
-            for prompt in conversations
-        ])
+        input_ids = torch.stack(
+            [
+                tokenizer_mm_token(prompt, tokenizer, return_tensors="pt")
+                for prompt in conversations
+            ]
+        )
     else:
-        input_ids = tokenizer(conversations, return_tensors="pt", padding="longest", max_length=tokenizer.model_max_length, truncation=True).input_ids
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
 
     targets = input_ids.clone()
     assert conv.sep_style == conversation_lib.SeparatorStyle.MPT
@@ -129,14 +140,16 @@ def preprocess_llama3(
                 break
             parts[0] += sep
 
-            round_len = len(tokenizer_mm_token(rou, tokenizer))+1
+            round_len = len(tokenizer_mm_token(rou, tokenizer)) + 1
             instruction_len = len(tokenizer_mm_token(parts[0], tokenizer))
 
             if i > 0:
                 round_len -= 1
                 instruction_len -= 1
 
-            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX # ignore the instruction
+            target[cur_len : cur_len + instruction_len] = (
+                IGNORE_INDEX  # ignore the instruction
+            )
             if rou == "":
                 break
 
@@ -145,7 +158,6 @@ def preprocess_llama3(
                 break
             parts[0] += sep
             cur_len += round_len
-
 
         target[cur_len:] = IGNORE_INDEX
 
@@ -161,6 +173,7 @@ def preprocess_llama3(
         input_ids=input_ids,
         labels=targets,
     )
+
 
 def preprocess(
     sources: Sequence[str],
@@ -212,8 +225,7 @@ class DataCollatorForSupervisedDataset(object):
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple(
-            [instance[key] for instance in instances]
-            for key in ("input_ids", "labels")
+            [instance[key] for instance in instances] for key in ("input_ids", "labels")
         )
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids,
@@ -240,7 +252,6 @@ class DataCollatorForSupervisedDataset(object):
                     instance["audio_sr"][0],
                 )
 
-
         # if not all none add to the batch
         def all_none(batch):
             return all([x is None for x in batch])
@@ -249,6 +260,7 @@ class DataCollatorForSupervisedDataset(object):
             batch["audios_srs"] = batch_audios_srs
 
         return batch
+
 
 def tokenizer_mm_token(
     prompt,

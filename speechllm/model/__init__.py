@@ -1,6 +1,6 @@
 from .modeling_speechllm import SpeechLLM
 from .configuration_speechllm import SpeechLLMConfig
-from .speech_encoder import WavLMEncoder, HubertEncoder
+from .speech_encoder import WavLMEncoder
 from .projector import MLPProjector
 from .text_decoder import LlamaDecoder
 from .downsample import Downsample
@@ -15,8 +15,7 @@ AutoModel.register(SpeechLLMConfig, SpeechLLM)
 __all__ = [
     "SpeechLLM",
     "SpeechLLMConfig",
-    "WavLMEncoder", 
-    "HubertEncoder",
+    "WavLMEncoder",
     "MLPProjector",
     "LlamaDecoder",
     "Downsample",

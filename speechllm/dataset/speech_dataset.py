@@ -1,16 +1,15 @@
 import logging
-import torch
-import torchaudio.transforms as T
-from datasets import Dataset, load_dataset, concatenate_datasets, DownloadMode
 from pathlib import Path
-from torch.utils.data import Dataset as TorchDataset
-from transformers import PreTrainedTokenizer
-from typing import Dict, List, Optional, Union
-import os
 
+from datasets import Dataset, DownloadMode, concatenate_datasets, load_dataset
 from speechllm.arguments import DataArguments
-from speechllm.dataset.utils import preprocess
 from speechllm.constants import DEFAULT_AUDIO_TOKEN
+from speechllm.dataset.utils import preprocess
+import torch
+from torch.utils.data import Dataset as TorchDataset
+import torchaudio.transforms as T
+from transformers import PreTrainedTokenizer
+from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +28,14 @@ class SpeechDataset(TorchDataset):
         self.amount = data_args.amount
         self.min_duration = data_args.min_duration
         self.max_duration = data_args.max_duration
-        self.remap_keys = data_args.remap_keys if data_args.remap_keys is not None else {}
+        self.remap_keys = (
+            data_args.remap_keys if data_args.remap_keys is not None else {}
+        )
         self.sampling_rate = data_args.sampling_rate
         self.num_proc_for_preprocessing = data_args.num_proc_for_preprocessing
 
+        # Load and preprocess the dataset
         self.dataset = self._load_dataset()
-        # Apply preprocessing
         self.dataset = self._preprocess_dataset()
 
         logger.info(f"Loaded {len(self.dataset)} samples")
@@ -71,7 +72,9 @@ class SpeechDataset(TorchDataset):
                     split=split_str,
                 )
                 datasets.append(ds)
-            dataset = concatenate_datasets(datasets) if len(datasets) > 1 else datasets[0]
+            dataset = (
+                concatenate_datasets(datasets) if len(datasets) > 1 else datasets[0]
+            )
         else:
             dataset = load_dataset(
                 "parquet",
@@ -86,14 +89,22 @@ class SpeechDataset(TorchDataset):
         if self.split == "train":
             filename = "train.clean.100.parquet"
         elif self.split == "train_full":
-            filename = ["train.clean.100.parquet", "train.clean.360.parquet", "train.other.500.parquet"]
+            filename = [
+                "train.clean.100.parquet",
+                "train.clean.360.parquet",
+                "train.other.500.parquet",
+            ]
         elif self.split == "validation":
             filename = "dev.clean.parquet"
         elif self.split == "test":
             filename = "test.clean.parquet"
         else:
             filename = f"{self.split}/data.parquet"
-        return str(data_path / filename) if isinstance(filename, str) else [str(data_path / f) for f in filename]
+        return (
+            str(data_path / filename)
+            if isinstance(filename, str)
+            else [str(data_path / f) for f in filename]
+        )
 
     def __len__(self):
         return len(self.dataset)
@@ -109,42 +120,44 @@ class SpeechDataset(TorchDataset):
             # Handle different audio formats
             audio_input, sr_input = self._process_audio_input(data["audio"])
 
-            data_dict.update({
-                "audio": [audio_input],
-                "audio_sr": [sr_input]
-            })
+            data_dict.update({"audio": [audio_input], "audio_sr": [sr_input]})
 
         return data_dict
 
     def _preprocess_dataset(self):
         """Apply filtering and preprocessing to the dataset."""
         if self.min_duration is not None or self.max_duration is not None:
-            self.dataset = self.dataset.filter(self._filter_by_duration, num_proc=self.num_proc_for_preprocessing)
+            self.dataset = self.dataset.filter(
+                self._filter_by_duration, num_proc=self.num_proc_for_preprocessing
+            )
 
         self.dataset = self.dataset.map(
             lambda example: self._remap_keys_in_example(example),
-            num_proc=self.num_proc_for_preprocessing
+            num_proc=self.num_proc_for_preprocessing,
         )
         self.dataset = self.dataset.map(
-            self._prepare_asr_example,
-            num_proc=self.num_proc_for_preprocessing
+            self._prepare_asr_example, num_proc=self.num_proc_for_preprocessing
         )
         return self.dataset
 
     def _prepare_asr_example(self, example):
         """Prepare ASR example."""
-        example["conversations"] = self._create_asr_conversation(example["transcription"])
+        example["conversations"] = self._create_asr_conversation(
+            example["transcription"]
+        )
         return example
 
     def _filter_by_duration(self, example):
         """Filter examples by audio duration."""
         # Try to get duration from different possible keys
         duration = None
-        if 'duration' in example:
-            duration = example['duration']
-        elif 'audio' in example and example['audio'] is not None:
-            if isinstance(example['audio'], dict) and 'array' in example['audio']:
-                duration = len(example['audio']['array']) / example['audio']['sampling_rate']
+        if "duration" in example:
+            duration = example["duration"]
+        elif "audio" in example and example["audio"] is not None:
+            if isinstance(example["audio"], dict) and "array" in example["audio"]:
+                duration = (
+                    len(example["audio"]["array"]) / example["audio"]["sampling_rate"]
+                )
         else:
             raise ValueError(f"No audio input found in example: {example}")
 
@@ -177,7 +190,7 @@ class SpeechDataset(TorchDataset):
 
     def _process_audio_input(self, audio_data):
         """Process audio input with resampling."""
-        if isinstance(audio_data, dict) and 'array' in audio_data:
+        if isinstance(audio_data, dict) and "array" in audio_data:
             # Handle HuggingFace datasets audio format
             audio_array = torch.as_tensor(audio_data["array"]).to(torch.float32)
             sr = audio_data["sampling_rate"]
@@ -189,7 +202,7 @@ class SpeechDataset(TorchDataset):
             raise ValueError(f"Unsupported audio format: {type(audio_data)}")
 
         # Resample if needed
-        target_sr = getattr(self, 'audio_input_sampling_rate', self.sampling_rate)
+        target_sr = getattr(self, "audio_input_sampling_rate", self.sampling_rate)
         audio, sr = self._resample_audio(audio_array, sr, target_sr)
 
         return audio, sr
@@ -211,14 +224,16 @@ class SpeechDataset(TorchDataset):
         tokenized = preprocess(
             sources,
             self.tokenizer,
-            getattr(self, 'conversation_version', 'llama_3_1'),
-            has_audio=data.get("audio", None) is not None
+            getattr(self, "conversation_version", "llama_3_1"),
+            has_audio=data.get("audio", None) is not None,
         )
 
-        data_dict.update({
-            "input_ids": tokenized["input_ids"][0],
-            "labels": tokenized["labels"][0],
-        })
+        data_dict.update(
+            {
+                "input_ids": tokenized["input_ids"][0],
+                "labels": tokenized["labels"][0],
+            }
+        )
 
         return data_dict
 
@@ -227,16 +242,11 @@ class SpeechDataset(TorchDataset):
         return [
             {
                 "from": "human",
-                "value": f"{DEFAULT_AUDIO_TOKEN}\ntranscribe input speech to English text: "
+                "value": f"{DEFAULT_AUDIO_TOKEN}\ntranscribe input speech to English text: ",
             },
-            {
-                "from": "assistant",
-                "value": transcription
-            }
+            {"from": "assistant", "value": transcription},
         ]
 
-
-from transformers import AutoTokenizer
 
 if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")

@@ -25,6 +25,7 @@ elif torch.backends.mps.is_available():
 else:
     device = torch.device("cpu")
 
+
 # Feel free to change the dataset.
 def load_librispeech():
     # Load LibriSpeech train-clean-100 dataset

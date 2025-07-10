@@ -1,4 +1,3 @@
-
 IGNORE_INDEX = -100
 
 DEFAULT_AUDIO_TOKEN = "<audio>"

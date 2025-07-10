@@ -1,7 +1,8 @@
-import contextlib
 from abc import ABCMeta, abstractmethod
-from typing import List, Optional
+import logging
+from typing import Optional
 
+from speechllm import conversation as conversation_lib
 import torch
 from transformers import (
     AutoConfig,
@@ -11,15 +12,10 @@ from transformers import (
     PreTrainedModel,
 )
 
-from speechllm import conversation as conversation_lib
-
-import logging
 logger = logging.getLogger(__name__)
 
 
-class HfTextDecoder(
-    torch.nn.Module, metaclass=ABCMeta
-):
+class HfTextDecoder(torch.nn.Module, metaclass=ABCMeta):
     """
     Base class for Hugging Face text decoders.
 
@@ -87,9 +83,7 @@ class HfTextDecoder(
         self.add_lm_head = add_lm_head
 
         config_dict = config_dict or {}
-        self.name_or_path = name_or_path or config_dict.pop(
-            "_name_or_path", None
-        )
+        self.name_or_path = name_or_path or config_dict.pop("_name_or_path", None)
         if self.name_or_path is None:
             raise ValueError(
                 "`name_or_path` must be provided either as an explicit "
@@ -142,17 +136,20 @@ class HfTextDecoder(
         if attn_implementation is None:
             # Use default implementation
             return
-        
+
         # Simple fallback logic - in a real implementation this would be more sophisticated
-        if attn_implementation == "flash_attention_2" and not self._supports_flash_attn_2:
+        if (
+            attn_implementation == "flash_attention_2"
+            and not self._supports_flash_attn_2
+        ):
             logging.warning("flash_attention_2 not supported, falling back to default")
             return
         elif attn_implementation == "sdpa" and not self._supports_sdpa:
             logging.warning("sdpa not supported, falling back to default")
             return
-        
+
         # Set the attention implementation if supported
-        if hasattr(self, '_attn_implementation'):
+        if hasattr(self, "_attn_implementation"):
             self._attn_implementation = attn_implementation
 
     @property
@@ -161,20 +158,20 @@ class HfTextDecoder(
         pass
 
     def _adapt_tokenizer_to_conversation_version(self):
-        if (
-            self.conversation_version == "llama_3_1"
-        ):
+        if self.conversation_version == "llama_3_1":
             pad_token = "<|finetune_right_pad_id|>"
             logger.info(f"Setting pad token to '{pad_token}'.")
             self.tokenizer.pad_token = pad_token
             self.tokenizer.pad_token_id = 128004
             self.model.generation_config.eos_token_id = 128009
             # ↑ 128009 = <|eot_id|>
-            conversation_lib.default_conversation = (
-                conversation_lib.conv_templates[self.conversation_version]
-            )
+            conversation_lib.default_conversation = conversation_lib.conv_templates[
+                self.conversation_version
+            ]
         else:
-            raise ValueError(f"Unsupported conversation version: {self.conversation_version}")
+            raise ValueError(
+                f"Unsupported conversation version: {self.conversation_version}"
+            )
 
         logger.info(
             f"Using conversation format: "
@@ -205,7 +202,8 @@ class HfTextDecoder(
     @property
     def hidden_size(self):
         return self.config.hidden_size
-    
+
+
 class LlamaDecoder(HfTextDecoder):
     tokenizer_class = AutoTokenizer
     tokenizer_text_arg_name = "text"

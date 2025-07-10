@@ -5,9 +5,8 @@ Torch module that downsamples input, i.e. it stacks every n vectors.
 import torch
 
 
-
 # From the paper (Sec. 3.1) https://arxiv.org/pdf/2110.13900:
-# We stack every n consecutive frames to form a new feature vector, 
+# We stack every n consecutive frames to form a new feature vector,
 # reducing the sequence length by a factor of n while increasing the hidden size accordingly.
 class Downsample(torch.nn.Module):
     """
@@ -35,10 +34,7 @@ class Downsample(torch.nn.Module):
         if pad_length > 0:
             vectors = torch.nn.functional.pad(vectors, (0, 0, 0, pad_length))
 
-
         vectors = vectors.view(batch_size, new_length, stack_size, feature_num)
         # Merge the last two dimensions into a single dimension.
-        vectors = vectors.reshape(
-            batch_size, new_length, stack_size * feature_num
-        )
+        vectors = vectors.reshape(batch_size, new_length, stack_size * feature_num)
         return vectors
