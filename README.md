@@ -19,6 +19,8 @@ SpeechLLM implements a neural architecture for automatic speech recognition by i
 ```bash
 git clone <repository-url>
 cd speechllm
+
+pip install --upgrade pip
 pip install -e .
 
 # For training capabilities, install with training dependencies
@@ -119,6 +121,8 @@ The framework expects datasets with the following structure:
     # ... other metadata fields
 }
 ```
+
+Use remap_keys to map fields in your dataset to the expected names. For example, if your dataset uses "text" instead of "transcription", set `remap_keys: {"text": "transcription"}` in your config to ensure the framework reads the correct field.
 
 ## Prompt Format
 

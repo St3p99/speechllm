@@ -37,6 +37,8 @@ training:
   # DDP parameters
   ddp_find_unused_parameters: false
 
+  report_to: none
+
 model:
   speech_encoder_name_or_path: "microsoft/wavlm-large"
   text_decoder_name_or_path: "meta-llama/Llama-3.2-1B"
