@@ -110,7 +110,8 @@ class SpeechLLM(nn.Module):
     def forward(
         self,
         input_ids,
-        audios_srs=None,
+        audios=None,
+        audio_padding_masks=None,
         attention_mask=None,
         position_ids=None,
         input_embeds=None,
@@ -141,7 +142,8 @@ class SpeechLLM(nn.Module):
                     "labels": labels,
                 },
                 audio_inputs={
-                    "audios_srs": audios_srs,
+                    "audios": audios,
+                    "audio_padding_masks": audio_padding_masks,
                 },
             )
         else:
@@ -182,9 +184,10 @@ class SpeechLLM(nn.Module):
         if labels is not None and (labels == IGNORE_INDEX).all():
             raise ValueError("Labels contain only ignore index")
 
-        audios_srs = audio_inputs.get("audios_srs", None)
+        audios = audio_inputs.get("audios", None)
+        audio_padding_masks = audio_inputs.get("audio_padding_masks", None)
 
-        if audios_srs is None:
+        if audios is None:
             return (
                 input_ids,
                 position_ids,
@@ -196,14 +199,13 @@ class SpeechLLM(nn.Module):
             )
 
         # Process batch of audios
-        batched_audios, audio_padding_masks = self._process_audio_batch(audios_srs)
         audio_valid_mask = (
             ~audio_padding_masks if audio_padding_masks is not None else None
         )
-        if batched_audios is not None:
+        if audios is not None:
             # Pass batched tensor and attention masks to encoder
             audio_features, audio_attention_mask = self.encoder(
-                batched_audios,
+                audios,
                 attention_mask=audio_valid_mask,
                 return_attention_mask=True,
             )
@@ -444,87 +446,6 @@ class SpeechLLM(nn.Module):
         new_labels = torch.cat(new_labels, dim=0)
 
         return new_input_embeds, new_labels
-
-    def _resample_audio(self, audio, orig_sr, target_sr):
-        """Resample audio tensor from orig_sr to target_sr."""
-        if orig_sr == target_sr:
-            return audio
-
-        # Use torchaudio's resample function
-        resampler = torchaudio.transforms.Resample(
-            orig_freq=orig_sr, new_freq=target_sr
-        )
-        return resampler(audio)
-
-    def _process_audio_batch(self, audios_srs):
-        """
-        Process a batch of audio tuples into a batched tensor with attention masks.
-
-        Args:
-            audios_srs: List of tuples (audio_tensor, sample_rate)
-
-        Returns:
-            tuple: (batched_audio_tensor, audio_attention_mask)
-                - batched_audio_tensor: torch.Tensor of shape (batch_size, max_length)
-                - audio_attention_mask: torch.Tensor of shape (batch_size, max_length) indicating valid audio regions
-        """
-        if not audios_srs:
-            return None, None
-
-        # Check that encoder has input_sampling_rate attribute
-        if not hasattr(self.encoder, "input_sampling_rate"):
-            raise AttributeError("Encoder must have 'input_sampling_rate' attribute.")
-
-        target_sr = self.encoder.input_sampling_rate
-        processed_audios = []
-        original_lengths = []
-
-        for audio, sr in audios_srs:
-            # Ensure audio is 1D
-            if audio.dim() > 1:
-                audio = audio.squeeze()
-            # Validate audio is not empty
-            if audio.numel() == 0:
-                raise ValueError(
-                    "Empty audio tensor detected. This will cause processing failures."
-                )
-            # Resample if necessary
-            if sr != target_sr:
-                audio = self._resample_audio(audio, sr, target_sr)
-            processed_audios.append(audio)
-            original_lengths.append(audio.shape[0])
-
-        if len(processed_audios) == 0:
-            return None, None
-
-        # Find max length for padding
-        max_length = max(original_lengths)
-
-        # Pad all audios to max length and create attention masks
-        batched_audios = []
-        audio_padding_masks = []
-
-        for audio, orig_len in zip(processed_audios, original_lengths):
-            padding = max_length - orig_len
-            if orig_len < max_length:
-                audio = F.pad(audio, (0, padding), mode="constant", value=0)
-
-            padding = max_length - orig_len  # always defined
-            cur_padding_mask = torch.cat(
-                [
-                    torch.zeros(orig_len, dtype=torch.bool, device=audio.device),
-                    torch.ones(padding, dtype=torch.bool, device=audio.device),
-                ]
-            )
-
-            batched_audios.append(audio)
-            audio_padding_masks.append(cur_padding_mask)
-
-        # Stack into batch tensors
-        batched_audio_tensor = torch.stack(batched_audios, dim=0)
-        audio_padding_masks = torch.stack(audio_padding_masks, dim=0)
-
-        return batched_audio_tensor, audio_padding_masks
 
     @property
     def device(self):

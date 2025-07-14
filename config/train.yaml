@@ -25,6 +25,7 @@ training:
   lr_scheduler_type: cosine
   optim: adamw_torch
   max_grad_norm: 1.0
+  dataloader_num_workers: 1
 
   # Saving parameters
   save_strategy: "no"

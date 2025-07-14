@@ -138,23 +138,7 @@ class WavLMEncoder(nn.Module):
         total_stride = torch.prod(torch.tensor(stride)).item()
 
         # Create attention mask for the encoded features
-        batch_size = attention_mask.shape[0]
         encoded_seq_len = x.shape[1]
-
-        # Create attention mask for encoded features
-        encoded_attention_mask = torch.zeros(
-            batch_size, encoded_seq_len, dtype=torch.bool, device=x.device
-        )
-
-        # for i in range(encoded_seq_len):
-        #     start_idx = i * total_stride
-        #     end_idx = min(start_idx + total_stride, attention_mask.shape[1])
-        #     # If any part of the window is valid, mark the encoded position as valid
-        #     encoded_attention_mask[:, i] = attention_mask[:, start_idx:end_idx].any(
-        #         dim=1
-        #     )
-
-        # Vectorized version of the loop above
         encoded_attention_mask = self._create_downsampled_attention_mask(
             attention_mask, total_stride, encoded_seq_len
         )
@@ -167,21 +151,6 @@ class WavLMEncoder(nn.Module):
 
         # Create attention mask for the final downsampled features
         final_seq_len = x.shape[1]
-        final_attention_mask = torch.zeros(
-            batch_size, final_seq_len, dtype=torch.bool, device=x.device
-        )
-
-        # for i in range(final_seq_len):
-        #     start_idx = i * self.downsample.stack_size
-        #     end_idx = min(
-        #         start_idx + self.downsample.stack_size, encoded_attention_mask.shape[1]
-        #     )
-        #     # If any part of the stacked window is valid, mark the final position as valid
-        #     final_attention_mask[:, i] = encoded_attention_mask[
-        #         :, start_idx:end_idx
-        #     ].any(dim=1)
-
-        # Vectorized version of the loop above
         final_attention_mask = self._create_downsampled_attention_mask(
             encoded_attention_mask, self.downsample.stack_size, final_seq_len
         )

@@ -243,21 +243,40 @@ class DataCollatorForSupervisedDataset(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
-        batch_audios_srs = [None] * len(instances)
-
-        for i, instance in enumerate(instances):
+        # Collect audio tensors, pad as needed, discard sr
+        audio_tensors = []
+        for instance in instances:
             if "audio" in instance:
-                batch_audios_srs[i] = (
-                    instance["audio"][0],
-                    instance["audio_sr"][0],
-                )
+                audio_tensors.append(instance["audio"][0])
+            else:
+                audio_tensors.append(None)
 
-        # if not all none add to the batch
-        def all_none(batch):
-            return all([x is None for x in batch])
+        # Find max length for padding
+        max_audio_len = max([a.shape[-1] for a in audio_tensors if a is not None], default=0)
+        dtype = audio_tensors[0].dtype if any(a is not None for a in audio_tensors) else torch.float32
+        device = audio_tensors[0].device if any(a is not None for a in audio_tensors) else "cpu"
 
-        if not all_none(batch_audios_srs):
-            batch["audios_srs"] = batch_audios_srs
+        padded_audios = []
+        audio_padding_masks = []
+        for a in audio_tensors:
+            if a is None:
+                padded = torch.zeros(max_audio_len, dtype=dtype, device=device)
+            else:
+                pad_len = max_audio_len - a.shape[-1]
+                if pad_len > 0:
+                    padded = torch.cat([a, torch.zeros(pad_len, dtype=a.dtype, device=a.device)], dim=-1)
+                else:
+                    padded = a
+            padded_audios.append(padded)
+            audio_padding_masks.append(torch.cat([torch.zeros(a.shape[-1], dtype=torch.bool, device=a.device), torch.ones(pad_len, dtype=torch.bool, device=a.device)]))
+
+        batch_audios = torch.stack(padded_audios) if max_audio_len > 0 else None
+        batch_audio_padding_masks = torch.stack(audio_padding_masks) if max_audio_len > 0 else None
+
+        if batch_audios is not None:
+            batch["audios"] = batch_audios
+        if batch_audio_padding_masks is not None:
+            batch["audio_padding_masks"] = batch_audio_padding_masks
 
         return batch
 
